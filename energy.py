@@ -11,74 +11,80 @@ username = 'EMAIL ADDRESS' # Replace with your Tesla Account Email Address
 password = 'TESLA GATEWAY PASSWORD' # Replace with the last 5 digits of your Gateway Password
 
 # LED settings
-LED_COUNT = 10  # Number of LEDs per section
+LED_COUNT = 30  # Total number of LEDs
 LED_PIN = board.D18  # GPIO pin 18
 LED_BRIGHTNESS = 0.5  # Range: 0.0 to 1.0
+
+# Define sections for different meters
+SOLAR_SECTION = range(0, 10)
+BATTERY_SECTION = range(10, 20)
+LOAD_SECTION = range(20, 30)
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Get the powerwall data
-def get_powerwall_data(ip):
+# Get the power output of the solar array
+def get_solar_power(ip):
     login_url = f"https://{ip}/api/login/Basic"
     meter_url = f"https://{ip}/api/meters/aggregates"
-    soe_url = f"https://{ip}/api/system_status/soe"
 
     session = requests.Session()
     session.verify = False
     session.post(login_url, headers={'Content-Type': 'application/json'}, json={'username': username, 'email': email, 'password': password, 'force_sm_off': False})
 
     response = session.get(meter_url)
-    solar_power = response.json()['solar']['instant_power']
-    load_power = response.json()['load']['instant_power']
-    response = session.get(soe_url)
-    charge_percent = response.json()['percentage']
+    power = response.json()['solar']['instant_power']
+    print(f'Solar power output: {power / 1000:.2f} kW')  # Print the current solar power with 2 decimal places
+    return power
 
-    print(f'Solar power output: {solar_power / 1000} kW')  # Print the current solar power
-    print(f'House load: {load_power / 1000} kW')  # Print the current house load
-    print(f'Powerwall charge: {charge_percent}%')  # Print the current Powerwall charge
+# Same as get_solar_power but for load and battery
+def get_load_power(ip):
+    # same as in get_solar_power until...
+    response = session.get(meter_url)
+    power = response.json()['load']['instant_power']
+    print(f'House load: {power / 1000:.2f} kW')  # Print the current house load with 2 decimal places
+    return power
 
-    return solar_power, load_power, charge_percent
+def get_charge_state(ip):
+    # same as in get_solar_power until...
+    response = session.get(meter_url)
+    charge = response.json()['percentage']
+    print(f'Powerwall charge: {charge:.2f}%')  # Print the current Powerwall charge with 2 decimal places
+    return charge
 
 # Get the number of LEDs to light up and their color based on the power output
-def get_leds_and_color(power, is_load=False):
-    # Convert power to kilowatts
-    power = power / 1000
-
-    num_leds = round((power / (10 if is_load else 6.8)) * LED_COUNT)
-
-    if is_load:
-        if power > 5:
-            color = (0, 255, 0)  # Red in GRB
-        else:
-            color = (255, 0, 0)  # Green in GRB
-    else:
-        if power < 2.5:
-            color = (0, 255, 0)  # Red in GRB
-        elif power < 5:
-            color = (165, 255, 0)  # Orange in GRB
-        else:
-            color = (255, 0, 0)  # Green in GRB
-
+def get_leds_and_color(power, max_power, color_scale):
+    num_leds = round((power / max_power) * LED_COUNT / 3)
+    color = color_scale[min(int(power / (max_power / 3)), 2)]
     return num_leds, color
 
 def main():
     # Initialize the LED strip
-    pixels = neopixel.NeoPixel(LED_PIN, LED_COUNT * 3, brightness=LED_BRIGHTNESS, pixel_order=neopixel.GRB)
+    pixels = neopixel.NeoPixel(LED_PIN, LED_COUNT, brightness=LED_BRIGHTNESS, pixel_order=neopixel.GRB)
+
+    # Define color scales for different meters
+    solar_scale = [(0, 255, 0), (165, 255, 0), (255, 0, 0)]
+    battery_scale = [(255, 0, 0), (165, 255, 0), (255, 0, 0)]
+    load_scale = [(255, 0, 0), (165, 255, 0), (0, 255, 0)]
 
     while True:
-        solar_power, load_power, charge_percent = get_powerwall_data(powerwall_ip)
-        num_solar_leds, solar_color = get_leds_and_color(solar_power)
-        num_load_leds, load_color = get_leds_and_color(load_power, True)
-        num_charge_leds, charge_color = get_leds_and_color(charge_percent * 10)  # Convert percentage to a 0 to 10 scale
+        # Fetch data
+        solar_power = get_solar_power(powerwall_ip)
+        battery_charge = get_charge_state(powerwall_ip)
+        load_power = get_load_power(powerwall_ip)
+
+        # Calculate LEDs and colors
+        solar_leds, solar_color = get_leds_and_color(solar_power, 6800, solar_scale)
+        battery_leds, battery_color = get_leds_and_color(battery_charge, 100, battery_scale)
+        load_leds, load_color = get_leds_and_color(load_power, 10000, load_scale)
 
         # Update LEDs
-        for i in range(LED_COUNT * 3):
-            if i < num_solar_leds:
+        for i in range(LED_COUNT):
+            if i in SOLAR_SECTION and i - SOLAR_SECTION.start < solar_leds:
                 pixels[i] = solar_color
-            elif i < LED_COUNT + num_charge_leds:
-                pixels[i] = charge_color
-            elif i < LED_COUNT * 2 + num_load_leds:
+            elif i in BATTERY_SECTION and i - BATTERY_SECTION.start < battery_leds:
+                pixels[i] = battery_color
+            elif i in LOAD_SECTION and i - LOAD_SECTION.start < load_leds:
                 pixels[i] = load_color
             else:
                 pixels[i] = (0, 0, 0)  # Off
